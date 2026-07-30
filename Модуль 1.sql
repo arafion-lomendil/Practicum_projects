@@ -1,5 +1,9 @@
--- Анализ данных для агентства недвижимости
--- Решаем ad hoc задачи
+/* Анализ данных для агентства недвижимости
+ Решаем ad hoc задачи
+ Автор: Денис Рубцов
+ Дата: 16.12.2025
+*/
+
 -- Задача 1: Время активности объявлений
 -- Определим аномальные значения (выбросы) по значению перцентилей:
 WITH limits AS (
@@ -42,11 +46,11 @@ SELECT  id,
         	WHEN type = 'город' AND city <> 'Санкт-Петербург' THEN 'ЛенОбл'
         END AS region,
         CASE
-            WHEN days_exposition BETWEEN 1 AND 30 THEN '1-30 days'
-            WHEN days_exposition BETWEEN 31 AND 90 THEN '31-90 days'
-            WHEN days_exposition BETWEEN 91 AND 180 THEN '91-180 days'
-            WHEN days_exposition >= 181 THEN '181 days +'
-            WHEN days_exposition IS NULL THEN 'non category'
+            WHEN days_exposition BETWEEN 1 AND 30 THEN '01. 1-30 days'
+            WHEN days_exposition BETWEEN 31 AND 90 THEN '02. 31-90 days'
+            WHEN days_exposition BETWEEN 91 AND 180 THEN '03. 91-180 days'
+            WHEN days_exposition >= 181 THEN '04. 181+ days'
+            WHEN days_exposition IS NULL THEN '05. non category'
         END AS category
     FROM real_estate.advertisement
     LEFT JOIN real_estate.flats USING (id)
@@ -56,17 +60,15 @@ SELECT  id,
         first_day_exposition BETWEEN '2015-01-01' AND '2018-12-31'
         AND id IN (SELECT * FROM filtered_id)
     )
--- Продолжите запрос здесь
--- Используйте id объявлений (СТЕ filtered_id), которые не содержат выбросы при анализе данных
 SELECT region,
 	   category,
 	   COUNT(*) AS ad_count,
-	   (SELECT COUNT(*) FROM real_estate.flats OVER(PARTITION BY category)) AS ad_share,
+	   ROUND(COUNT(*)::NUMERIC / SUM(COUNT(*)) OVER (PARTITION BY region), 2) AS ad_count_share,
 	   ROUND(AVG(last_price/total_area)::NUMERIC,2) AS price_per_meter,
 	   ROUND(AVG(total_area)::NUMERIC,2) AS average_area,
 	   ROUND(AVG(ceiling_height)::NUMERIC, 2) AS avg_ceil_height,
-	   ROUND(AVG(airports_nearest)::NUMERIC, 2) AS avg_nearest_airport,
-	   ROUND((SELECT COUNT(*) FROM categorized_data WHERE rooms = 0) / COUNT(*)::NUMERIC, 2) AS studio_perc,
+	   ROUND(AVG(airports_nearest)::NUMERIC / 1000, 2) AS avg_nearest_airport_km,
+	   ROUND((SELECT COUNT(*) FROM categorized_data WHERE rooms = 0 OR rooms IS NULL) / COUNT(*)::NUMERIC, 2) AS studio_perc,
 	   ROUND((SELECT COUNT(*) FROM categorized_data WHERE is_apartment = 1) / COUNT(*)::NUMERIC, 2) AS apart_perc,
 	   ROUND((SELECT COUNT(*) FROM categorized_data WHERE open_plan = 1) / COUNT(*)::NUMERIC, 2) AS open_plan_perc,
 	   PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY rooms) AS mediane_rooms,	   
@@ -75,18 +77,14 @@ SELECT region,
 	   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY parks_around3000) AS mediane_parks,
 	   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ponds_around3000) AS mediane_ponds
 FROM categorized_data
-LEFT JOIN real_estate.flats USING (id)
 WHERE region IS NOT NULL
 GROUP BY region, category
 ORDER BY region DESC, category;
 
--- Продолжите запрос здесь
--- Используйте id объявлений (СТЕ filtered_id), которые не содержат выбросы при анализе данных
-
-
-
 -- Задача 2: Сезонность объявлений
 -- Определим аномальные значения (выбросы) по значению перцентилей:
+set lc_time = 'ru_RU';
+
 WITH limits AS (
     SELECT
         PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY total_area) AS total_area_limit,
@@ -96,16 +94,68 @@ WITH limits AS (
         PERCENTILE_CONT(0.01) WITHIN GROUP (ORDER BY ceiling_height) AS ceiling_height_limit_l
     FROM real_estate.flats
 ),
--- Найдём id объявлений, которые не содержат выбросы, также оставим пропущенные данные:
-filtered_id AS(
+filtered_id AS (
     SELECT id
     FROM real_estate.flats
     WHERE
         total_area < (SELECT total_area_limit FROM limits)
         AND (rooms < (SELECT rooms_limit FROM limits) OR rooms IS NULL)
         AND (balcony < (SELECT balcony_limit FROM limits) OR balcony IS NULL)
-        AND ((ceiling_height < (SELECT ceiling_height_limit_h FROM limits)
-            AND ceiling_height > (SELECT ceiling_height_limit_l FROM limits)) OR ceiling_height IS NULL)
-    ),
--- Продолжите запрос здесь
--- Используйте id объявлений (СТЕ filtered_id), которые не содержат выбросы при анализе данных
+        AND (
+            (ceiling_height < (SELECT ceiling_height_limit_h FROM limits)
+            AND ceiling_height > (SELECT ceiling_height_limit_l FROM limits))
+            OR ceiling_height IS NULL
+        )
+),
+publication_month AS (
+    SELECT id,
+        EXTRACT(MONTH FROM first_day_exposition) AS month_num,
+        TO_CHAR(first_day_exposition, 'TMmon') AS month_name,
+        last_price,
+        total_area
+    FROM real_estate.advertisement ad
+    LEFT JOIN real_estate.flats USING (id)
+    LEFT JOIN real_estate.type USING (type_id)
+    WHERE first_day_exposition BETWEEN '2015-01-01' AND '2018-12-31'
+        AND id IN (SELECT * FROM filtered_id)
+        AND type = 'город'
+    ORDER BY month_num
+),
+sales_month AS (
+    SELECT id,
+        EXTRACT(MONTH FROM first_day_exposition + days_exposition * INTERVAL '1 day') AS month_num,
+        TO_CHAR(first_day_exposition + days_exposition * INTERVAL '1 day', 'TMmon') AS month_name,
+        last_price,
+        total_area
+    FROM real_estate.advertisement ad
+    LEFT JOIN real_estate.flats USING (id)
+    LEFT JOIN real_estate.type USING (type_id)
+    WHERE first_day_exposition + days_exposition * INTERVAL '1 day' BETWEEN '2015-01-01' AND '2018-12-31'
+        AND id IN (SELECT * FROM filtered_id)
+        AND type = 'город'
+        ORDER BY month_num
+)
+SELECT 
+    month_num,
+    'published' AS category,
+    month_name,
+    COUNT(id) AS ad_count,
+    RANK() OVER(ORDER BY COUNT(id) DESC) AS ad_rank,
+    ROUND(COUNT(id)::NUMERIC / SUM(COUNT(id)) OVER (), 2) AS ad_count_share,
+    ROUND(AVG(last_price / total_area)::NUMERIC, 2) AS price_per_meter,
+    ROUND(AVG(total_area)::NUMERIC, 2) AS average_area
+FROM publication_month
+GROUP BY month_num, month_name
+UNION
+SELECT
+	month_num,
+	'sold' AS category,
+    month_name,
+    COUNT(id),
+    RANK() OVER(ORDER BY COUNT(id) DESC),
+    ROUND(COUNT(id)::NUMERIC / SUM(COUNT(id)) OVER (), 2) AS ad_count_share,
+    ROUND(AVG(last_price / total_area)::NUMERIC, 2),
+    ROUND(AVG(total_area)::NUMERIC, 2)
+FROM sales_month
+GROUP BY month_num, month_name
+ORDER BY 1, 2;
